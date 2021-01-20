@@ -8,31 +8,28 @@ import bisect
 import itertools
 
 schema = dj.schema('lab_behavior')
-Stimuli = dj.create_virtual_module('Stimuli.py', 'lab_stimuli')
 Mice = dj.create_virtual_module('mice.py', 'lab_mice')
-
-
-def erd():
-    """for convenience"""
-    dj.ERD(schema).draw()
-
 
 @schema
 class SetupControl(dj.Lookup):
     definition = """
-    #
+    # Control table 
     setup                : varchar(256)                 # Setup name
     ---
     ip                   : varchar(16)                  # setup IP address
-    status="ready"       : enum('ready','running','stop','sleeping','offtime','exit') 
+    status="exit"        : enum('ready','running','stop','sleeping','exit','offtime','wakeup') 
     animal_id=null       : int                          # animal id
     task_idx=null        : int                          # task identification number
-    last_ping            : timestamp                    
+    last_ping="current_timestamp()" : timestamp                    
     notes=null           : varchar(256)                 
     current_session=null : int                          
     last_trial=null      : int                          
-    total_liquid=null    : float     
-    state=null           : varchar(256)  
+    total_liquid=null    : float                        
+    state=null           : varchar(255)                 
+    difficulty=null      : smallint                     
+    start_time=null      : time                         
+    stop_time=null       : time                         
+    queue_size=null      : int     
     """
 
 
@@ -155,14 +152,13 @@ class Trial(dj.Manual):
 
         # correct trials
         correct_trials = ((LiquidDelivery * self).proj(
-            selected='(time - end_time)<100 AND (time - end_time)>0') & 'selected > 0')
+            selected='ABS(time - end_time)<500 AND (time - start_time)>0') & 'selected > 0')
 
         # missed trials
-        incorrect_trials = ((Lick * self).proj(
-            selected='(time <= end_time) AND (time > start_time)') & 'selected > 0') - (self & correct_trials)
+        missed_trials = (self & AbortedTrial).proj()
 
         # incorrect trials
-        missed_trials = ((self - correct_trials) - incorrect_trials).proj()
+        incorrect_trials = ((self - correct_trials) - missed_trials).proj()
 
         # plot trials
         fig = plt.figure(figsize=(10, 4), tight_layout=True)
@@ -243,7 +239,7 @@ class LiquidDelivery(dj.Manual):
 
     def plot(self):
         
-        animals =  Mice.Mice() & self
+        animals = Mice.Mice() - Mice.Death() & 'animal_id != 0' & self
 
         for animal in animals:
 
@@ -269,7 +265,7 @@ class LiquidDelivery(dj.Manual):
             # construct tuples (unique_date, total_reward_per_day)
             dates_liqs_unique = [(dt, sum(v for d,v in grp)) for dt, grp in itertools.groupby(tuples_list,
                                                             key=lambda x: x[0])]
-            print('last date: {}, amount: {}'.format(dates_liqs_unique[-1][0], dates_liqs_unique[-1][1]))
+            print('animal_id: {}, last date: {}, amount: {}'.format(animal['animal_id'], dates_liqs_unique[-1][0], dates_liqs_unique[-1][1]))
 
             dates_to_plot = [tpls[0] for tpls in dates_liqs_unique]
             liqs_to_plot = [tpls[1] for tpls in dates_liqs_unique]
@@ -295,13 +291,13 @@ class StimOnset(dj.Manual):
     """
 
 @schema
-class PeriodOnset(dj.Manual):
+class StateOnset(dj.Manual):
     definition = """
     # Trial period timestamps
     -> Session
     time			    : int 	            # time from session start (ms)
     ---
-    period              : enum('Cue','Delay','Response','PreTrial','Trial','InterTrial','Reward','Punish')
+    state               : enum('Cue','Delay','Response','PreTrial','Trial','InterTrial','Reward','Punish', 'Abort','Sleep','Offtime','Exit')
     """
 
 
